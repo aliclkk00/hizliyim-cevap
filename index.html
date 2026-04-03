@@ -12,7 +12,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, doc, setDoc, getDoc, getDocs, updateDoc, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, doc, setDoc, getDoc, getDocs, updateDoc, increment, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         // FIREBASE AYARLARI
         const myFirebaseConfig = {
@@ -39,7 +39,7 @@
         function checkTimeAndApplyTheme() {
             const hour = new Date().getHours();
             const body = document.body;
-            const isDayTime = hour >= 80 && hour < 20;
+            const isDayTime = hour >= 100 && hour < 20;
 
             if (isDayTime) {
                 body.classList.add('day-mode');
@@ -216,28 +216,73 @@
                 }
                 
                 const dateOptions = { day: '2-digit', month: '2-digit', year: 'numeric' };
+                const userAuthData = JSON.parse(localStorage.getItem('hizliyimAuth') || '{}');
+                const isAdmin = userAuthData.username === 'alicelik';
 
                 posts.forEach(post => {
                     const postEl = document.createElement('div');
-                    postEl.className = 'glass-panel !p-5 !w-full !max-w-none cursor-pointer hover:scale-[1.02] transition-transform !items-start text-left mb-4';
+                    postEl.className = 'glass-panel !p-5 !w-full !max-w-none hover:scale-[1.02] transition-transform !items-start text-left mb-4 relative';
                     
                     const dateStr = new Date(post.createdAt).toLocaleDateString('tr-TR', dateOptions);
 
+                    let deleteBtnHTML = '';
+                    if (isAdmin) {
+                        deleteBtnHTML = `
+                            <button onclick="confirmDeletePost('${post.id}', event)" class="absolute top-4 right-4 text-red-400 hover:text-red-200 transition-colors p-2 z-10" title="Paylaşımı Sil">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                            </button>
+                        `;
+                    }
+
                     postEl.innerHTML = `
-                        <div class="flex flex-col border-white/10 w-full">
+                        ${deleteBtnHTML}
+                        <div class="flex flex-col border-white/10 w-full cursor-pointer pr-8" onclick="window.location.hash = '#/post/${post.id}'">
                             <span class="text-xs text-white/50 mb-1 tracking-wide">${dateStr}</span>
                             <h3 class="text-xl font-bold text-blue-200 leading-tight">${post.title}</h3>
                         </div>
                     `;
                     
-                    postEl.onclick = () => {
-                        window.location.hash = `#/post/${post.id}`;
-                    };
                     postsList.appendChild(postEl);
                 });
             } catch (e) {
                 console.error(e);
                 postsList.innerHTML = '<p class="text-center text-red-400">Gönderiler yüklenirken hata oluştu.</p>';
+            }
+        }
+
+        // --- SİLME ONAY MANTIGI ---
+        window.confirmDeletePost = function(postId, event) {
+            event.stopPropagation(); // Tıklamanın karta geçmesini engeller
+            window.postToDelete = postId;
+            document.getElementById('delete-confirm-modal').classList.remove('hidden');
+        }
+
+        window.closeDeleteModal = function() {
+            document.getElementById('delete-confirm-modal').classList.add('hidden');
+            window.postToDelete = null;
+        }
+
+        window.deletePost = async function() {
+            if (!window.db || !window.postToDelete) return;
+            
+            const btn = document.getElementById('confirm-delete-btn');
+            btn.textContent = 'Siliniyor...';
+            btn.disabled = true;
+
+            try {
+                await deleteDoc(doc(window.db, "posts", window.postToDelete));
+                closeDeleteModal();
+                loadPosts(); // Listeyi yenile
+                
+                // Eğer detay sayfasındayken silindiyse ana sayfaya dön
+                if (window.location.hash.startsWith('#/post/')) {
+                    window.location.hash = '#/home';
+                }
+            } catch (e) {
+                alert('Paylaşım silinemedi! Bir hata oluştu.');
+            } finally {
+                btn.textContent = 'Evet, Sil';
+                btn.disabled = false;
             }
         }
 
@@ -266,14 +311,40 @@
                 const dateOptions = { day: '2-digit', month: '2-digit', year: 'numeric' };
                 const dateStr = new Date(post.createdAt).toLocaleDateString('tr-TR', dateOptions);
 
+                // Çoklu Medya İşleme
                 let mediaContent = '';
                 if (post.media && post.media.trim() !== "") {
-                    mediaContent = `<img src="${post.media}" class="w-full rounded-xl max-h-[500px] object-contain bg-black/40 border border-white/10 shadow-lg mt-6" alt="Medya">`;
+                    // Virgülle ayırıp boşlukları temizle
+                    const mediaFiles = post.media.split(',').map(m => m.trim()).filter(m => m !== "");
+                    
+                    if (mediaFiles.length > 0) {
+                        mediaContent += `<div class="mt-6 flex flex-col gap-4 w-full">`;
+                        mediaFiles.forEach(file => {
+                            const ext = file.split('.').pop().toLowerCase();
+                            // Video formatları
+                            if (['mp4', 'webm', 'ogg'].includes(ext)) {
+                                mediaContent += `
+                                    <video controls class="w-full rounded-xl max-h-[500px] bg-black/40 border border-white/10 shadow-lg">
+                                        <source src="${file}" type="video/${ext}">
+                                        Tarayıcınız video etiketini desteklemiyor.
+                                    </video>
+                                `;
+                            } else {
+                                // Varsayılan olarak resim kabul et
+                                mediaContent += `<img src="${file}" class="w-full rounded-xl max-h-[500px] object-contain bg-black/40 border border-white/10 shadow-lg" alt="Medya">`;
+                            }
+                        });
+                        mediaContent += `</div>`;
+                    } else {
+                        mediaContent = `<div class="mt-6"><span class="text-xs text-white/40 italic px-3 py-2 bg-black/20 rounded-md inline-block">Paylaşılan medya yok</span></div>`;
+                    }
                 } else {
                     mediaContent = `<div class="mt-6"><span class="text-xs text-white/40 italic px-3 py-2 bg-black/20 rounded-md inline-block">Paylaşılan medya yok</span></div>`;
                 }
 
                 let viewsContent = '';
+                let adminControls = '';
+                
                 if (isAdmin) {
                     const currentViews = (post.views || 0) + 1;
                     viewsContent = `
@@ -282,12 +353,21 @@
                             <span class="text-xs font-medium text-blue-200">Görüntülenme: ${currentViews}</span>
                         </div>
                     `;
+                    
+                    adminControls = `
+                        <div class="absolute top-6 right-6 z-10">
+                            <button onclick="confirmDeletePost('${postId}', event)" class="text-red-400 hover:text-red-200 transition-colors p-2 bg-red-500/10 rounded-lg border border-red-500/20" title="Paylaşımı Sil">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                            </button>
+                        </div>
+                    `;
                 }
 
                 container.innerHTML = `
-                    <div class="glass-panel !p-6 sm:!p-8 !w-full !max-w-none text-left !items-start">
+                    <div class="glass-panel !p-6 sm:!p-8 !w-full !max-w-none text-left !items-start relative">
+                        ${adminControls}
                         <span class="text-sm text-white/50 mb-2 block tracking-wide">${dateStr}</span>
-                        <h2 class="text-2xl sm:text-3xl font-bold text-white mb-6 leading-tight">${post.title}</h2>
+                        <h2 class="text-2xl sm:text-3xl font-bold text-white mb-6 leading-tight pr-10">${post.title}</h2>
                         <div class="w-full h-px bg-white/10 mb-6"></div>
                         <p class="whitespace-pre-wrap w-full text-white/90 text-sm sm:text-base leading-relaxed">${post.description}</p>
                         ${mediaContent}
@@ -303,7 +383,14 @@
         window.submitPost = async function() {
             const title = document.getElementById('post-title').value.trim();
             const desc = document.getElementById('post-desc').value.trim();
-            const media = document.getElementById('post-media').value.trim();
+            
+            // Tüm medya kutucuklarını dolaş ve dolu olanları al
+            const mediaInputs = document.querySelectorAll('.post-media-input');
+            const mediaArray = [];
+            mediaInputs.forEach(input => {
+                if(input.value.trim() !== '') mediaArray.push(input.value.trim());
+            });
+            const media = mediaArray.join(',');
             
             if(!title) { alert('Başlık boş olamaz!'); return; }
             
@@ -326,9 +413,6 @@
                 setTimeout(() => {
                     closeNewPostModal();
                     loadPosts();
-                    document.getElementById('post-title').value = '';
-                    document.getElementById('post-desc').value = '';
-                    document.getElementById('post-media').value = '';
                     
                     btn.classList.remove('!bg-green-500', '!text-white');
                     btn.textContent = 'Paylaş';
@@ -340,6 +424,16 @@
                 btn.textContent = 'Paylaş';
                 btn.disabled = false;
             }
+        }
+
+        window.addMediaInput = function() {
+            const container = document.getElementById('media-inputs-container');
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'custom-input post-media-input animate-pop-in';
+            input.placeholder = 'Dosya Adı (Örn: resim2.jpg veya video.mp4)';
+            input.autocapitalize = 'none';
+            container.appendChild(input);
         }
 
         window.openFooterModal = function() {
@@ -371,7 +465,12 @@
             }
         }
 
-        window.openNewPostModal = () => document.getElementById('new-post-modal').classList.remove('hidden');
+        window.openNewPostModal = () => {
+            document.getElementById('post-title').value = '';
+            document.getElementById('post-desc').value = '';
+            document.getElementById('media-inputs-container').innerHTML = '<input type="text" class="custom-input post-media-input" placeholder="Dosya Adı (Örn: resim1.jpg veya video.mp4)" autocapitalize="none">';
+            document.getElementById('new-post-modal').classList.remove('hidden');
+        };
         window.closeNewPostModal = () => document.getElementById('new-post-modal').classList.add('hidden');
         window.logout = () => {
             localStorage.removeItem('hizliyimAuth');
@@ -437,7 +536,6 @@
 
                     const usernameInput = document.getElementById('register-username').value.trim();
                     
-                    // Kullanıcı Adı Uzunluk Kontrolü
                     if(usernameInput.length < 3 || usernameInput.length > 12) {
                         showError('register', "Kullanıcı adı 3 ile 12 karakter arasında olmalıdır.");
                         return;
@@ -510,14 +608,13 @@
         function initSnowEffects() {
             const container = document.getElementById('day-effects-container');
             container.style.display = 'block'; 
-            const particleCount = 120; // Sıklık önceki efsane yoğunluğuna getirildi
+            const particleCount = 120; 
             for (let i = 0; i < particleCount; i++) {
                 const flake = document.createElement('div');
                 flake.classList.add('snowflake');
                 const size = Math.random() * 5 + 2 + 'px';
                 flake.style.width = size; flake.style.height = size;
                 flake.style.left = Math.random() * 100 + 'vw';
-                // Yüzde(%) yerine Sabit Piksel (px) atadık. Klavye asla sıkıştıramaz!
                 flake.style.top = Math.random() * 1200 + 'px'; 
                 flake.style.animationDuration = (Math.random() * 5 + 4) + 's';
                 flake.style.animationDelay = (Math.random() * -5) + 's'; 
@@ -532,12 +629,11 @@
             nightContainer.style.display = 'block'; staticContainer.style.display = 'block';
             setInterval(() => createStar(nightContainer, 'shooting-star'), 2000); 
             setInterval(() => createStar(nightContainer, 'speed-line'), 600);
-            const starCount = 200; // Yıldızlar çok daha sık ve yoğun
+            const starCount = 200; 
             for (let i = 0; i < starCount; i++) {
                 const star = document.createElement('div');
                 star.classList.add('static-star');
                 star.style.left = `${Math.random() * 100}vw`;
-                // Sabit piksel (px) ile klavye sıkışması kalıcı olarak engellendi
                 star.style.top = `${Math.random() * 1200}px`; 
                 const size = Math.random() * 2 + 1; 
                 star.style.width = `${size}px`; star.style.height = `${size}px`;
@@ -569,6 +665,12 @@
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700;900&display=swap');
         
         :root { --brand-blue: #027AFF; }
+
+        /* BEYAZ ŞERİT SORUNUNU ÇÖZEN SİHİRLİ KOD */
+        html {
+            background-color: #00050d; /* En dibin siyah/lacivert olması */
+            overscroll-behavior-y: none; /* iOS'da ekranın esnemesini engeller */
+        }
 
         body {
             font-family: 'Inter', sans-serif;
@@ -737,8 +839,8 @@
         .link-text { 
             color: rgba(255,255,255,0.8); 
             margin-top: 1.5rem; 
-            font-size: 0.8rem; /* Daha küçük text */
-            white-space: nowrap; /* Tek satırda tutar */
+            font-size: 0.8rem;
+            white-space: nowrap;
         }
         .link-text a { color: white; font-weight: 700; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; }
 
@@ -791,7 +893,6 @@
                 <p class="text-white text-xs mt-2 animate-pulse">Kaydın oluşturuluyor...</p>
             </div>
             <form id="form-register" class="w-full">
-                <!-- minlength 3, maxlength 12 eklendi -->
                 <input type="text" id="register-username" placeholder="Kullanıcı Adı (3-12 Karakter)" class="custom-input" minlength="3" maxlength="12" autocapitalize="none" autocomplete="off" required>
                 <input type="email" id="register-email" placeholder="E-posta Adresi (İsteğe Bağlı)" class="custom-input" autocapitalize="none" autocomplete="off">
                 <input type="password" id="register-password" placeholder="Şifre Belirle" class="custom-input" required>
@@ -810,7 +911,6 @@
         <div class="apple-header w-full max-w-2xl px-5 py-5 flex justify-between items-center min-h-[90px]">
             <h1 class="animated-title !m-0 !text-2xl tracking-wider">hizliyim.com</h1>
             <div class="text-right flex flex-col items-end gap-1.5">
-                <!-- Kullanıcı adı çıkış butonunun üstünde -->
                 <p class="welcome-user-text text-[13px] text-white/90 font-bold mb-0 hidden tracking-wide"></p>
                 <button onclick="logout()" class="flex items-center gap-1.5 text-[11px] bg-red-500/20 text-red-200 px-3 py-1.5 rounded-lg hover:bg-red-500/40 transition border border-red-500/20">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
@@ -819,7 +919,6 @@
             </div>
         </div>
 
-        <!-- CAM ÇİZGİ EKLENDİ -->
         <div class="glass-divider"></div>
 
         <div id="admin-controls" class="hidden w-full max-w-2xl mb-6">
@@ -835,7 +934,7 @@
 
     <!-- Paylaşım Detay Sayfası -->
     <div id="page-post" class="page-content hidden w-full flex-1 flex flex-col items-center px-4 pt-6">
-        <!-- APPLE GLASS HEADER (Ana sayfadaki ile birebir aynı) -->
+        <!-- APPLE GLASS HEADER -->
         <div class="apple-header w-full max-w-2xl px-5 py-5 flex justify-between items-center min-h-[90px]">
             <h1 class="animated-title !m-0 !text-2xl tracking-wider">hizliyim.com</h1>
             <div class="text-right flex flex-col items-end gap-1.5">
@@ -847,7 +946,6 @@
             </div>
         </div>
 
-        <!-- CAM ÇİZGİ EKLENDİ -->
         <div class="glass-divider"></div>
 
         <!-- Ayrı ve Küçük Geri Dön Kutucuğu -->
@@ -863,7 +961,7 @@
         </div>
     </div>
 
-    <!-- Apple Akrilik Tarzı Footer (Her zaman içeriğin en altında) -->
+    <!-- Apple Akrilik Tarzı Footer -->
     <footer class="w-full flex justify-center mt-auto pb-6 pt-8 z-40 relative">
         <div id="acrylic-footer" class="backdrop-blur-[40px] bg-white/[0.04] border border-white/[0.08] text-white/30 text-xs px-6 py-2.5 rounded-full shadow-[0_8px_32px_rgba(0,0,0,0.3)] transition-all duration-300 flex items-center justify-center gap-2 font-medium tracking-wide">
             <span id="footer-text-display">Yükleniyor...</span>
@@ -873,7 +971,7 @@
         </div>
     </footer>
 
-    <!-- Footer Düzenleme Modalı (Admin İçin) -->
+    <!-- Footer Düzenleme Modalı -->
     <div id="footer-edit-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md p-4">
         <div class="glass-panel w-full max-w-sm">
             <h2 class="text-xl font-bold mb-4 text-white text-center">Alt Bilgiyi Düzenle</h2>
@@ -891,8 +989,16 @@
             <h2 class="text-2xl font-bold mb-6 text-white text-center">Yeni Paylaşım Oluştur</h2>
             <input type="text" id="post-title" class="custom-input" placeholder="Paylaşım Başlığı">
             <textarea id="post-desc" class="custom-input min-h-[120px] resize-y" placeholder="Açıklama (İsteğe bağlı)"></textarea>
-            <input type="text" id="post-media" class="custom-input" placeholder="Dosya Adı (Örn: resim.jpg veya medya.mp4)" autocapitalize="none">
-            <p class="text-xs text-white/50 mb-4 text-center">Yüklenecek dosyanın tam adını ve uzantısını yazmanız yeterlidir.</p>
+            
+            <div id="media-inputs-container" class="w-full flex flex-col">
+                <!-- Medya kutucukları buraya eklenecek -->
+            </div>
+            
+            <button type="button" onclick="addMediaInput()" class="w-full text-sm text-blue-400 hover:text-blue-300 mb-6 flex items-center justify-center gap-1 font-bold transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                Yeni Medya Kutucuğu Ekle
+            </button>
+
             <div class="flex gap-4 w-full">
                 <button onclick="closeNewPostModal()" class="action-btn !bg-white/10 !text-white flex-1">İptal</button>
                 <button id="submit-post-btn" onclick="submitPost()" class="action-btn !bg-blue-500 !text-white flex-1 transition-colors duration-300">Paylaş</button>
@@ -900,14 +1006,20 @@
         </div>
     </div>
 
+    <!-- Silme Onay Modalı (Admin İçin) -->
+    <div id="delete-confirm-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md p-4">
+        <div class="glass-panel w-full max-w-sm">
+            <h2 class="text-xl font-bold mb-2 text-white text-center">Paylaşımı Sil</h2>
+            <p class="text-sm text-white/70 text-center mb-6">Bu paylaşımı silmek istediğinize emin misiniz? Bu işlem geri alınamaz.</p>
+            <div class="flex gap-4 w-full">
+                <button onclick="closeDeleteModal()" class="action-btn !bg-white/10 !text-white flex-1">İptal</button>
+                <button id="confirm-delete-btn" onclick="deletePost()" class="action-btn !bg-red-500 !text-white flex-1 transition-colors duration-300">Evet, Sil</button>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>
-
-
-
-
-
-
 
 
 
