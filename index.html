@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>hizliyim.com - HizliSystems</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700;900&display=swap" rel="stylesheet">
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, doc, setDoc, getDoc, getDocs, updateDoc, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // FIREBASE AYARLARI
+        const myFirebaseConfig = {
+            apiKey: "AIzaSyD7FVfYsijmL7UPH3gYzrfHPdmIfM17f5I",
+            authDomain: "hizliyim-cevap.firebaseapp.com",
+            projectId: "hizliyim-cevap",
+            storageBucket: "hizliyim-cevap.firebasestorage.app",
+            messagingSenderId: "198785345469",
+            appId: "1:198785345469:web:99dd0b171d30087dca54d4"
+        };
+
+        let db, auth, userId;
+
+        try {
+            const app = initializeApp(myFirebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            console.log("Firebase başarıyla başlatıldı.");
+        } catch (e) {
+            console.error("Firebase başlatma hatası:", e);
+        }
+
+        // --- ZAMAN KONTROLÜ VE TEMA AYARI ---
+        function checkTimeAndApplyTheme() {
+            const hour = new Date().getHours();
+            const body = document.body;
+            const isDayTime = hour >= 80 && hour < 20;
+
+            if (isDayTime) {
+                body.classList.add('day-mode');
+                body.classList.remove('night-mode');
+                initSnowEffects();
+            } else {
+                body.classList.add('night-mode');
+                body.classList.remove('day-mode');
+                initNightEffects();
+            }
+        }
+
+        // --- Auth & Logic ---
+        async function authenticateUser() {
+            if (!auth) {
+                window.router.initialize(); 
+                return;
+            }
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                    window.userId = userId;
+                } else {
+                    signInAnonymously(auth).then((cred) => {
+                        userId = cred.user.uid;
+                        window.userId = userId;
+                    });
+                }
+                window.router.initialize();
+            });
+            window.db = db;
+        }
+
+        async function saveRegistrationData(username, email, password) {
+            if (!window.db) return { success: false, message: "Bağlantı yok." };
+             try {
+                const querySnapshot = await getDocs(collection(window.db, "users"));
+                let usernameExists = false;
+                let emailExists = false;
+                
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    if (data.username.toLowerCase() === username.toLowerCase()) usernameExists = true;
+                    if (email && data.email && data.email.toLowerCase() === email.toLowerCase()) emailExists = true;
+                });
+
+                if (usernameExists) return { success: false, message: "Bu kullanıcı adı zaten alınmış." };
+                if (emailExists) return { success: false, message: "Bu e-posta zaten kayıtlı." };
+
+                const userRef = doc(window.db, "users", username.toLowerCase());
+                await setDoc(userRef, {
+                    username, email: email ? email.toLowerCase() : "", password, 
+                    createdAt: new Date().toISOString(), status: 'active'
+                });
+                return { success: true };
+            } catch (e) { return { success: false, message: "Bir hata oluştu." }; }
+        }
+
+        async function verifyLoginCredentials(identifier, password) {
+             if (!window.db) return false;
+            try {
+                const querySnapshot = await getDocs(collection(window.db, "users"));
+                let matchedUser = null;
+                
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    const isUsernameMatch = data.username.toLowerCase() === identifier.toLowerCase();
+                    const isEmailMatch = data.email && data.email.toLowerCase() === identifier.toLowerCase();
+                    
+                    if ((isUsernameMatch || isEmailMatch) && data.password === password) {
+                        matchedUser = { success: true, username: data.username };
+                    }
+                });
+                return matchedUser || false;
+            } catch (e) { return false; }
+        }
+
+        // --- FOOTER SETTINGS (Akrilik Yazı) ---
+        window.loadFooterSettings = async function() {
+            if (!window.db) return;
+            try {
+                const docRef = doc(window.db, "settings", "general");
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists() && docSnap.data().footerText) {
+                    document.getElementById('footer-text-display').textContent = docSnap.data().footerText;
+                } else {
+                    await setDoc(docRef, { footerText: 'HizliSystems v4.7' }, { merge: true });
+                }
+            } catch (e) { console.error("Footer ayarı yüklenemedi:", e); }
+        }
+
+        // --- Router & Protection ---
+        const router = {
+            routes: { '#': 'login', '#/': 'login', '#/login': 'login', '#/register': 'register', '#/home': 'home' },
+            load: async () => {
+                const hash = window.location.hash || '#/login';
+                let page = 'login';
+                let postId = null;
+
+                if (hash.startsWith('#/post/')) {
+                    page = 'post';
+                    postId = hash.replace('#/post/', '');
+                } else {
+                    page = router.routes[hash] || 'login';
+                }
+                
+                const userAuthData = localStorage.getItem('hizliyimAuth');
+                
+                if (!userAuthData && (page === 'home' || page === 'post')) {
+                    window.location.hash = '#/login';
+                    return;
+                }
+                
+                if (userAuthData && (page === 'login' || page === 'register')) {
+                    window.location.hash = '#/home';
+                    return;
+                }
+
+                document.querySelectorAll('.page-content').forEach(el => el.classList.add('hidden'));
+                const currentPage = document.getElementById(`page-${page}`);
+                if (currentPage) {
+                    currentPage.classList.remove('hidden');
+                    currentPage.classList.add('animate-pop-in');
+                }
+                hideError('login');
+                hideError('register');
+
+                if((page === 'home' || page === 'post') && userAuthData) {
+                    const currentUser = JSON.parse(userAuthData);
+                    
+                    document.querySelectorAll('.welcome-user-text').forEach(el => {
+                        el.textContent = `${currentUser.username}`;
+                        el.classList.remove('hidden');
+                    });
+                    
+                    if(currentUser.username === 'alicelik') {
+                        document.getElementById('admin-controls')?.classList.remove('hidden');
+                        document.getElementById('footer-edit-btn')?.classList.remove('hidden');
+                    } else {
+                        document.getElementById('footer-edit-btn')?.classList.add('hidden');
+                    }
+                    
+                    if (page === 'home') {
+                        loadPosts();
+                    } else if (page === 'post' && postId) {
+                        await renderPostDetails(postId);
+                    }
+                }
+            },
+            initialize: () => {
+                window.addEventListener('hashchange', router.load);
+                router.load();
+            }
+        };
+        window.router = router;
+
+        // --- FORUM MANTIGI ---
+        window.loadPosts = async function() {
+            if (!window.db) return;
+            const postsList = document.getElementById('posts-list');
+            postsList.innerHTML = '<div class="spinner"></div>';
+            try {
+                const querySnapshot = await getDocs(collection(window.db, "posts"));
+                let posts = [];
+                querySnapshot.forEach((doc) => {
+                    posts.push({ id: doc.id, ...doc.data() });
+                });
+                
+                posts.sort((a, b) => b.createdAt - a.createdAt); 
+                
+                postsList.innerHTML = '';
+                if(posts.length === 0) {
+                    postsList.innerHTML = '<p class="text-center text-white/50">Henüz hiç paylaşım bulunmuyor.</p>';
+                }
+                
+                const dateOptions = { day: '2-digit', month: '2-digit', year: 'numeric' };
+
+                posts.forEach(post => {
+                    const postEl = document.createElement('div');
+                    postEl.className = 'glass-panel !p-5 !w-full !max-w-none cursor-pointer hover:scale-[1.02] transition-transform !items-start text-left mb-4';
+                    
+                    const dateStr = new Date(post.createdAt).toLocaleDateString('tr-TR', dateOptions);
+
+                    postEl.innerHTML = `
+                        <div class="flex flex-col border-white/10 w-full">
+                            <span class="text-xs text-white/50 mb-1 tracking-wide">${dateStr}</span>
+                            <h3 class="text-xl font-bold text-blue-200 leading-tight">${post.title}</h3>
+                        </div>
+                    `;
+                    
+                    postEl.onclick = () => {
+                        window.location.hash = `#/post/${post.id}`;
+                    };
+                    postsList.appendChild(postEl);
+                });
+            } catch (e) {
+                console.error(e);
+                postsList.innerHTML = '<p class="text-center text-red-400">Gönderiler yüklenirken hata oluştu.</p>';
+            }
+        }
+
+        // --- DETAY SAYFASI MANTIGI ---
+        window.renderPostDetails = async function(postId) {
+            if (!window.db) return;
+            const container = document.getElementById('post-detail-content');
+            container.innerHTML = '<div class="spinner mt-10"></div>';
+            
+            try {
+                const postRef = doc(window.db, "posts", postId);
+                const postSnap = await getDoc(postRef);
+
+                if (!postSnap.exists()) {
+                    container.innerHTML = '<p class="text-center text-white/50 mt-10">Paylaşım bulunamadı veya silinmiş.</p>';
+                    return;
+                }
+
+                const post = postSnap.data();
+
+                updateDoc(postRef, { views: increment(1) }).catch(e => console.error("Sayaç hatası:", e));
+
+                const userAuthData = JSON.parse(localStorage.getItem('hizliyimAuth') || '{}');
+                const isAdmin = userAuthData.username === 'alicelik';
+                
+                const dateOptions = { day: '2-digit', month: '2-digit', year: 'numeric' };
+                const dateStr = new Date(post.createdAt).toLocaleDateString('tr-TR', dateOptions);
+
+                let mediaContent = '';
+                if (post.media && post.media.trim() !== "") {
+                    mediaContent = `<img src="${post.media}" class="w-full rounded-xl max-h-[500px] object-contain bg-black/40 border border-white/10 shadow-lg mt-6" alt="Medya">`;
+                } else {
+                    mediaContent = `<div class="mt-6"><span class="text-xs text-white/40 italic px-3 py-2 bg-black/20 rounded-md inline-block">Paylaşılan medya yok</span></div>`;
+                }
+
+                let viewsContent = '';
+                if (isAdmin) {
+                    const currentViews = (post.views || 0) + 1;
+                    viewsContent = `
+                        <div class="mt-6 inline-flex items-center gap-2 px-3 py-1.5 bg-blue-500/20 border border-blue-500/30 rounded-lg">
+                            <svg class="w-4 h-4 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                            <span class="text-xs font-medium text-blue-200">Görüntülenme: ${currentViews}</span>
+                        </div>
+                    `;
+                }
+
+                container.innerHTML = `
+                    <div class="glass-panel !p-6 sm:!p-8 !w-full !max-w-none text-left !items-start">
+                        <span class="text-sm text-white/50 mb-2 block tracking-wide">${dateStr}</span>
+                        <h2 class="text-2xl sm:text-3xl font-bold text-white mb-6 leading-tight">${post.title}</h2>
+                        <div class="w-full h-px bg-white/10 mb-6"></div>
+                        <p class="whitespace-pre-wrap w-full text-white/90 text-sm sm:text-base leading-relaxed">${post.description}</p>
+                        ${mediaContent}
+                        ${viewsContent}
+                    </div>
+                `;
+            } catch (e) {
+                console.error(e);
+                container.innerHTML = '<p class="text-center text-red-400 mt-10">Paylaşım yüklenirken bir hata oluştu.</p>';
+            }
+        }
+
+        window.submitPost = async function() {
+            const title = document.getElementById('post-title').value.trim();
+            const desc = document.getElementById('post-desc').value.trim();
+            const media = document.getElementById('post-media').value.trim();
+            
+            if(!title) { alert('Başlık boş olamaz!'); return; }
+            
+            const btn = document.getElementById('submit-post-btn');
+            btn.textContent = 'Yükleniyor...';
+            btn.disabled = true;
+
+            try {
+                await addDoc(collection(window.db, "posts"), {
+                    title: title,
+                    description: desc,
+                    media: media,
+                    views: 0, 
+                    createdAt: Date.now()
+                });
+                
+                btn.classList.add('!bg-green-500', '!text-white');
+                btn.innerHTML = `<svg class="w-5 h-5 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Başarılı!`;
+
+                setTimeout(() => {
+                    closeNewPostModal();
+                    loadPosts();
+                    document.getElementById('post-title').value = '';
+                    document.getElementById('post-desc').value = '';
+                    document.getElementById('post-media').value = '';
+                    
+                    btn.classList.remove('!bg-green-500', '!text-white');
+                    btn.textContent = 'Paylaş';
+                    btn.disabled = false;
+                }, 1500);
+
+            } catch (e) {
+                alert('Paylaşım eklenemedi! Bir hata oluştu.');
+                btn.textContent = 'Paylaş';
+                btn.disabled = false;
+            }
+        }
+
+        window.openFooterModal = function() {
+            const currentText = document.getElementById('footer-text-display').textContent;
+            document.getElementById('footer-edit-input').value = currentText;
+            document.getElementById('footer-edit-modal').classList.remove('hidden');
+        }
+
+        window.closeFooterModal = function() {
+            document.getElementById('footer-edit-modal').classList.add('hidden');
+        }
+
+        window.saveFooterText = async function() {
+            const newText = document.getElementById('footer-edit-input').value.trim();
+            if(!newText) return;
+            
+            const btn = document.getElementById('save-footer-btn');
+            btn.textContent = 'Kaydediliyor...';
+            btn.disabled = true;
+            try {
+                await setDoc(doc(window.db, "settings", "general"), { footerText: newText }, { merge: true });
+                document.getElementById('footer-text-display').textContent = newText;
+                closeFooterModal();
+            } catch(e) {
+                alert('Yazı güncellenirken hata oluştu!');
+            } finally {
+                btn.textContent = 'Kaydet';
+                btn.disabled = false;
+            }
+        }
+
+        window.openNewPostModal = () => document.getElementById('new-post-modal').classList.remove('hidden');
+        window.closeNewPostModal = () => document.getElementById('new-post-modal').classList.add('hidden');
+        window.logout = () => {
+            localStorage.removeItem('hizliyimAuth');
+            window.location.hash = '#/login';
+            window.location.reload();
+        };
+
+        function showSuccessButton(buttonElement) {
+            const originalText = buttonElement.innerHTML;
+            buttonElement.classList.add('!bg-green-500', '!text-white');
+            buttonElement.innerHTML = `<svg class="w-5 h-5 inline-block mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Başarılı!`;
+            return originalText;
+        }
+
+        function restoreButton(buttonElement, originalText) {
+            buttonElement.classList.remove('!bg-green-500', '!text-white');
+            buttonElement.innerHTML = originalText;
+        }
+
+        // --- DOM Ready ---
+        document.addEventListener('DOMContentLoaded', () => {
+            authenticateUser(); 
+            checkTimeAndApplyTheme(); 
+            loadFooterSettings(); 
+
+            // Login
+            const formLogin = document.getElementById('form-login');
+            if (formLogin) {
+                formLogin.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    hideError('login');
+                    toggleLoading('login', true);
+                    
+                    const identifier = document.getElementById('login-identifier').value.trim();
+                    const password = document.getElementById('login-password').value;
+                    const result = await verifyLoginCredentials(identifier, password);
+                    
+                    if (result && result.success) {
+                        localStorage.setItem('hizliyimAuth', JSON.stringify({ identifier: identifier, username: result.username }));
+                        
+                        const btn = formLogin.querySelector('button[type="submit"]');
+                        const origText = showSuccessButton(btn);
+
+                        setTimeout(() => {
+                            window.location.hash = '#/home';
+                            formLogin.reset();
+                            toggleLoading('login', false);
+                            restoreButton(btn, origText);
+                        }, 1200);
+                    } else {
+                        toggleLoading('login', false);
+                        showError('login', "Giriş bilgileri hatalı, lütfen tekrar deneyin.");
+                    }
+                });
+            }
+
+            // Register
+            const formRegister = document.getElementById('form-register');
+            if (formRegister) {
+                formRegister.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    hideError('register');
+
+                    const usernameInput = document.getElementById('register-username').value.trim();
+                    
+                    // Kullanıcı Adı Uzunluk Kontrolü
+                    if(usernameInput.length < 3 || usernameInput.length > 12) {
+                        showError('register', "Kullanıcı adı 3 ile 12 karakter arasında olmalıdır.");
+                        return;
+                    }
+
+                    const pass = document.getElementById('register-password').value;
+                    const confirm = document.getElementById('register-confirm-password').value;
+                    if (pass !== confirm) { 
+                        showError('register', "Şifreler uyuşmuyor!"); 
+                        return; 
+                    }
+
+                    toggleLoading('register', true);
+                    const emailValue = document.getElementById('register-email').value.trim();
+                    const result = await saveRegistrationData(
+                        usernameInput,
+                        emailValue,
+                        pass
+                    );
+
+                    if (result.success) {
+                        const btn = formRegister.querySelector('button[type="submit"]');
+                        const origText = showSuccessButton(btn);
+
+                        setTimeout(() => {
+                            window.location.hash = '#/login';
+                            formRegister.reset();
+                            toggleLoading('register', false);
+                            restoreButton(btn, origText);
+                        }, 1200);
+                    } else {
+                        toggleLoading('register', false);
+                        showError('register', result.message);
+                    }
+                });
+            }
+        });
+
+        // Yardımcı Fonksiyonlar
+        function toggleLoading(type, isLoading) {
+            const form = document.getElementById(`form-${type}`);
+            const loading = document.getElementById(`${type}-loading`);
+            const links = document.getElementById(`${type}-links`);
+            
+            if (isLoading) {
+                form.classList.add('opacity-50', 'pointer-events-none');
+                links.classList.add('hidden');
+                loading.classList.remove('hidden');
+            } else {
+                form.classList.remove('opacity-50', 'pointer-events-none');
+                links.classList.remove('hidden');
+                loading.classList.add('hidden');
+            }
+        }
+
+        function showError(type, message) {
+            const errorBox = document.getElementById(`${type}-error`);
+            errorBox.textContent = message;
+            errorBox.classList.remove('hidden');
+            errorBox.classList.add('animate-shake');
+            setTimeout(() => errorBox.classList.remove('animate-shake'), 500);
+        }
+
+        function hideError(type) {
+            const errorBox = document.getElementById(`${type}-error`);
+            if(errorBox) errorBox.classList.add('hidden');
+        }
+
+        // --- EFEKTLER ---
+        function initSnowEffects() {
+            const container = document.getElementById('day-effects-container');
+            container.style.display = 'block'; 
+            const particleCount = 120; // Sıklık önceki efsane yoğunluğuna getirildi
+            for (let i = 0; i < particleCount; i++) {
+                const flake = document.createElement('div');
+                flake.classList.add('snowflake');
+                const size = Math.random() * 5 + 2 + 'px';
+                flake.style.width = size; flake.style.height = size;
+                flake.style.left = Math.random() * 100 + 'vw';
+                // Yüzde(%) yerine Sabit Piksel (px) atadık. Klavye asla sıkıştıramaz!
+                flake.style.top = Math.random() * 1200 + 'px'; 
+                flake.style.animationDuration = (Math.random() * 5 + 4) + 's';
+                flake.style.animationDelay = (Math.random() * -5) + 's'; 
+                flake.style.opacity = Math.random() * 0.7 + 0.3;
+                container.appendChild(flake);
+            }
+        }
+
+        function initNightEffects() {
+            const nightContainer = document.getElementById('night-effects-container');
+            const staticContainer = document.getElementById('static-stars-container');
+            nightContainer.style.display = 'block'; staticContainer.style.display = 'block';
+            setInterval(() => createStar(nightContainer, 'shooting-star'), 2000); 
+            setInterval(() => createStar(nightContainer, 'speed-line'), 600);
+            const starCount = 200; // Yıldızlar çok daha sık ve yoğun
+            for (let i = 0; i < starCount; i++) {
+                const star = document.createElement('div');
+                star.classList.add('static-star');
+                star.style.left = `${Math.random() * 100}vw`;
+                // Sabit piksel (px) ile klavye sıkışması kalıcı olarak engellendi
+                star.style.top = `${Math.random() * 1200}px`; 
+                const size = Math.random() * 2 + 1; 
+                star.style.width = `${size}px`; star.style.height = `${size}px`;
+                star.style.animationDuration = `${Math.random() * 3 + 2}s`; 
+                staticContainer.appendChild(star);
+            }
+        }
+
+        function createStar(container, type) {
+            if (container.children.length > 25) return; 
+            const el = document.createElement('div');
+            el.classList.add(type);
+            if (type === 'shooting-star') {
+                el.style.top = Math.random() * 800 + 'px'; 
+                el.style.left = Math.random() * 100 + 'vw';
+                el.style.animationDuration = '2s';
+            } else {
+                el.style.top = Math.random() * 1200 + 'px'; 
+                el.style.height = '1px';
+                el.style.animationDuration = '0.8s';
+                el.style.left = Math.random() > 0.5 ? '-5%' : 'auto';
+                if(el.style.left === 'auto') el.style.right = '-5%';
+            }
+            container.appendChild(el);
+            setTimeout(() => el.remove(), 2100);
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700;900&display=swap');
+        
+        :root { --brand-blue: #027AFF; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0; padding: 0; width: 100%; min-height: 100vh;
+            display: flex; flex-direction: column;
+            overflow-x: hidden; overflow-y: auto; color: white; position: relative;
+            background: transparent !important; 
+        }
+
+        /* Sayfa geneli için kaydırma çubuğu ayarları */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.3); border-radius: 10px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+
+        /* ARKA PLAN - Klavyeden bağımsız %100 sabitlendi */
+        .bg-gradient-overlay {
+            position: fixed; 
+            top: -20vh; left: -20vw; 
+            width: 140vw; height: 140vh; /* Ekranı fazlasıyla kaplayarak taşmaları/kaymaları önler */
+            z-index: -5; display: block;
+            transition: background 1s ease;
+        }
+
+        body.day-mode .bg-gradient-overlay {
+            background: linear-gradient(125deg, #001f3f, #027aff, #001233);
+            background-size: 400% 400%; 
+            animation: gradientBG 15s ease infinite;
+        }
+
+        body.night-mode .bg-gradient-overlay {
+            background: linear-gradient(180deg, #000000 0%, #05051a 50%, #000814 100%);
+            animation: none;
+        }
+
+        @keyframes gradientBG {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        /* EFEKT KONTEYNERLARI - Yükseklik tamamen sabitlendi */
+        #day-effects-container, #night-effects-container, #static-stars-container {
+            position: fixed; 
+            top: 0; left: 0; 
+            width: 100vw; height: 1200px; /* Asla değişmeyen sabit yükseklik */
+            pointer-events: none; display: none;
+        }
+        #day-effects-container { z-index: 0; }
+        #static-stars-container { z-index: -4; }
+        #night-effects-container { z-index: -3; }
+
+        .snowflake { position: absolute; background: white; border-radius: 50%; top: 0; animation: fall linear infinite; }
+        @keyframes fall { 
+            0% { transform: translateY(-100px) rotate(0deg); } 
+            100% { transform: translateY(1300px) rotate(360deg); } 
+        }
+
+        .static-star { position: absolute; background: white; border-radius: 50%; opacity: 0.6; animation: twinkle infinite ease-in-out; }
+        @keyframes twinkle { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.9; } }
+
+        .shooting-star {
+            position: absolute; width: 150px; height: 1px;
+            background: linear-gradient(90deg, transparent, white, transparent);
+            transform: rotate(-45deg); opacity: 0; animation: shoot linear forwards;
+        }
+        @keyframes shoot { 
+            0% { transform: translate(0,0) rotate(-45deg); opacity: 1; } 
+            100% { transform: translate(-800px, 800px) rotate(-45deg); opacity: 0; } 
+        }
+
+        .speed-line {
+            position: absolute; width: 30%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+            animation: speedMove linear forwards;
+        }
+        @keyframes speedMove { 
+            0% { transform: translateX(0); opacity: 0; } 
+            50% { opacity: 0.5; } 
+            100% { transform: translateX(100vw); opacity: 0; } 
+        }
+
+        .glass-panel {
+            backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+            border-radius: 30px; padding: 3rem; width: 90%; max-width: 420px;
+            display: flex; flex-direction: column; align-items: center;
+            position: relative; z-index: 50; transition: all 0.5s ease;
+        }
+
+        body.day-mode .glass-panel {
+            background: rgba(20, 40, 70, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.4);
+        }
+
+        body.night-mode .glass-panel {
+            background: linear-gradient(135deg, rgba(0, 60, 180, 0.65), rgba(0, 30, 120, 0.65));
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-top: 1px solid rgba(255, 255, 255, 0.4);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        /* APPLE GLASS HEADER (ÖZEL TASARIM) */
+        .apple-header {
+            backdrop-filter: saturate(180%) blur(50px); 
+            -webkit-backdrop-filter: saturate(180%) blur(50px);
+            border-radius: 28px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+            transition: all 0.5s ease;
+            position: relative;
+            z-index: 50;
+        }
+        body.day-mode .apple-header {
+            background: rgba(255, 255, 255, 0.55); /* Daha mat, akrilik görünüm */
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.3); 
+        }
+        body.night-mode .apple-header {
+            background: rgba(30, 30, 40, 0.65); /* Gece modu için mat koyu akrilik */
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-top: 1px solid rgba(255, 255, 255, 0.25);
+            box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.05); 
+        }
+
+        /* CAM AYIRICI ÇİZGİ */
+        .glass-divider {
+            width: 100%;
+            max-width: 42rem; /* max-w-2xl */
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+            box-shadow: 0 0 12px rgba(255, 255, 255, 0.3);
+            margin: 0.5rem 0 1.5rem 0;
+        }
+
+        body.day-mode .animated-title {
+            background: linear-gradient(to right, #ffffff 0%, #00f3ff 50%, #ffffff 100%);
+            background-size: 200% auto; color: #fff;
+            background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            animation: shineMove 3s linear infinite; font-size: 3rem; 
+        }
+        body.night-mode .animated-title {
+            color: #fff; animation: intensePulse 3s infinite ease-in-out;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.5); font-size: 2.5rem;
+        }
+        @keyframes shineMove { 0% { background-position: 200% center; } 100% { background-position: -200% center; } }
+        @keyframes intensePulse { 0%, 100% { text-shadow: 0 0 10px rgba(255, 255, 255, 0.5); } 50% { text-shadow: 0 0 25px rgba(2, 122, 255, 0.8), 0 0 50px rgba(2, 122, 255, 0.4); } }
+
+        .animated-title { font-family: 'Inter', sans-serif; font-weight: 900; letter-spacing: -1px; margin-bottom: 2rem; text-align: center; }
+
+        .custom-input {
+            width: 100%; background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.15);
+            color: white; padding: 14px 20px; border-radius: 16px; margin-bottom: 16px; outline: none; transition: all 0.3s ease; font-size: 0.95rem;
+        }
+        body.day-mode .custom-input { background: rgba(255, 255, 255, 0.1); }
+        .custom-input:focus { background: rgba(255, 255, 255, 0.2); border-color: #4da3ff; box-shadow: 0 0 15px rgba(2, 122, 255, 0.2); }
+
+        .action-btn {
+            width: 100%; font-weight: 800; padding: 16px; border-radius: 16px; border: none; cursor: pointer;
+            transition: transform 0.2s ease, background 0.2s ease, color 0.2s ease; font-size: 1rem; text-transform: uppercase; letter-spacing: 1px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2); margin-top: 10px;
+        }
+        body.day-mode .action-btn { background: linear-gradient(90deg, #ffffff, #d6eaff); color: #027aff; }
+        body.night-mode .action-btn { background: #ffffff; color: #027AFF; }
+        .action-btn:hover:not(:disabled) { transform: translateY(-2px); filter: brightness(1.1); }
+        .action-btn:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }
+
+        .link-text { 
+            color: rgba(255,255,255,0.8); 
+            margin-top: 1.5rem; 
+            font-size: 0.8rem; /* Daha küçük text */
+            white-space: nowrap; /* Tek satırda tutar */
+        }
+        .link-text a { color: white; font-weight: 700; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; }
+
+        .error-message { background: rgba(220, 38, 38, 0.25); border: 1px solid rgba(220, 38, 38, 0.5); color: #ffcccc; font-size: 0.9rem; padding: 12px; border-radius: 12px; margin-bottom: 20px; width: 100%; text-align: center; }
+
+        .animate-pop-in { animation: popIn 0.5s ease-out forwards; }
+        @keyframes popIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+        .animate-shake { animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both; }
+        @keyframes shake { 10%, 90% { transform: translate3d(-1px, 0, 0); } 20%, 80% { transform: translate3d(2px, 0, 0); } 30%, 50%, 70% { transform: translate3d(-4px, 0, 0); } 40%, 60% { transform: translate3d(4px, 0, 0); } }
+
+        .spinner { width: 30px; height: 30px; border: 3px solid rgba(255, 255, 255, 0.3); border-top-color: white; border-radius: 50%; animation: spin 1s linear infinite; margin: 10px auto; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="day-mode"> 
+
+    <div class="bg-gradient-overlay"></div>
+    
+    <div id="day-effects-container"></div>
+    <div id="static-stars-container"></div>
+    <div id="night-effects-container"></div>
+
+    <!-- Login Sayfası -->
+    <div id="page-login" class="page-content hidden w-full flex-1 flex flex-col justify-center items-center px-4 py-8">
+        <div class="glass-panel">
+            <h1 class="animated-title">hizliyim.com</h1>
+            <div id="login-error" class="error-message hidden"></div>
+            <div id="login-loading" class="hidden text-center mb-4">
+                <div class="spinner"></div>
+                <p class="text-white text-xs mt-2 animate-pulse">Veritabanı kontrol ediliyor...</p>
+            </div>
+            <form id="form-login" class="w-full">
+                <input type="text" id="login-identifier" placeholder="Kullanıcı Adı veya E-posta" class="custom-input" autocapitalize="none" autocomplete="off" required>
+                <input type="password" id="login-password" placeholder="Şifre" class="custom-input" required>
+                <button type="submit" class="action-btn transition-colors duration-300">Giriş Yap</button>
+            </form>
+            <div id="login-links" class="link-text">
+                Hesabın yok mu? <a href="#/register">Hemen Kayıt Ol</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Register Sayfası -->
+    <div id="page-register" class="page-content hidden w-full flex-1 flex flex-col justify-center items-center px-4 py-8">
+        <div class="glass-panel">
+            <h1 class="animated-title" style="font-size: 2rem;">Hesap Oluştur</h1>
+            <div id="register-error" class="error-message hidden"></div>
+            <div id="register-loading" class="hidden text-center mb-4">
+                <div class="spinner"></div>
+                <p class="text-white text-xs mt-2 animate-pulse">Kaydın oluşturuluyor...</p>
+            </div>
+            <form id="form-register" class="w-full">
+                <!-- minlength 3, maxlength 12 eklendi -->
+                <input type="text" id="register-username" placeholder="Kullanıcı Adı (3-12 Karakter)" class="custom-input" minlength="3" maxlength="12" autocapitalize="none" autocomplete="off" required>
+                <input type="email" id="register-email" placeholder="E-posta Adresi (İsteğe Bağlı)" class="custom-input" autocapitalize="none" autocomplete="off">
+                <input type="password" id="register-password" placeholder="Şifre Belirle" class="custom-input" required>
+                <input type="password" id="register-confirm-password" placeholder="Şifre Tekrar" class="custom-input" required>
+                <button type="submit" class="action-btn transition-colors duration-300">Kayıt Ol</button>
+            </form>
+            <div id="register-links" class="link-text">
+                Zaten hesabın var mı? <a href="#/login">Giriş Yap</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Ana Sayfa (Forum) -->
+    <div id="page-home" class="page-content hidden w-full flex-1 flex flex-col items-center px-4 pt-6">
+        <!-- APPLE GLASS HEADER -->
+        <div class="apple-header w-full max-w-2xl px-5 py-5 flex justify-between items-center min-h-[90px]">
+            <h1 class="animated-title !m-0 !text-2xl tracking-wider">hizliyim.com</h1>
+            <div class="text-right flex flex-col items-end gap-1.5">
+                <!-- Kullanıcı adı çıkış butonunun üstünde -->
+                <p class="welcome-user-text text-[13px] text-white/90 font-bold mb-0 hidden tracking-wide"></p>
+                <button onclick="logout()" class="flex items-center gap-1.5 text-[11px] bg-red-500/20 text-red-200 px-3 py-1.5 rounded-lg hover:bg-red-500/40 transition border border-red-500/20">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                    Çıkış Yap
+                </button>
+            </div>
+        </div>
+
+        <!-- CAM ÇİZGİ EKLENDİ -->
+        <div class="glass-divider"></div>
+
+        <div id="admin-controls" class="hidden w-full max-w-2xl mb-6">
+            <button onclick="openNewPostModal()" class="action-btn !bg-green-500/80 !text-white !py-3 shadow-lg hover:!bg-green-400">
+                + Yeni Paylaşım Ekle (Admin)
+            </button>
+        </div>
+
+        <div id="posts-list" class="w-full max-w-2xl flex flex-col gap-4">
+            <!-- JavaScript ile doldurulacak -->
+        </div>
+    </div>
+
+    <!-- Paylaşım Detay Sayfası -->
+    <div id="page-post" class="page-content hidden w-full flex-1 flex flex-col items-center px-4 pt-6">
+        <!-- APPLE GLASS HEADER (Ana sayfadaki ile birebir aynı) -->
+        <div class="apple-header w-full max-w-2xl px-5 py-5 flex justify-between items-center min-h-[90px]">
+            <h1 class="animated-title !m-0 !text-2xl tracking-wider">hizliyim.com</h1>
+            <div class="text-right flex flex-col items-end gap-1.5">
+                <p class="welcome-user-text text-[13px] text-white/90 font-bold mb-0 hidden tracking-wide"></p>
+                <button onclick="logout()" class="flex items-center gap-1.5 text-[11px] bg-red-500/20 text-red-200 px-3 py-1.5 rounded-lg hover:bg-red-500/40 transition border border-red-500/20">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                    Çıkış Yap
+                </button>
+            </div>
+        </div>
+
+        <!-- CAM ÇİZGİ EKLENDİ -->
+        <div class="glass-divider"></div>
+
+        <!-- Ayrı ve Küçük Geri Dön Kutucuğu -->
+        <div class="w-full max-w-2xl mb-6">
+            <button onclick="window.location.hash='#/home'" class="apple-header !rounded-xl px-4 py-2.5 inline-flex items-center gap-2 hover:scale-105 transition-transform border border-white/20 text-sm font-bold shadow-md cursor-pointer">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                Geri Dön
+            </button>
+        </div>
+
+        <div id="post-detail-content" class="w-full max-w-2xl flex flex-col gap-4">
+            <!-- JavaScript ile doldurulacak -->
+        </div>
+    </div>
+
+    <!-- Apple Akrilik Tarzı Footer (Her zaman içeriğin en altında) -->
+    <footer class="w-full flex justify-center mt-auto pb-6 pt-8 z-40 relative">
+        <div id="acrylic-footer" class="backdrop-blur-[40px] bg-white/[0.04] border border-white/[0.08] text-white/30 text-xs px-6 py-2.5 rounded-full shadow-[0_8px_32px_rgba(0,0,0,0.3)] transition-all duration-300 flex items-center justify-center gap-2 font-medium tracking-wide">
+            <span id="footer-text-display">Yükleniyor...</span>
+            <button id="footer-edit-btn" onclick="openFooterModal()" class="hidden ml-1 text-white/40 hover:text-white/80 transition" title="Yazıyı Düzenle">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+            </button>
+        </div>
+    </footer>
+
+    <!-- Footer Düzenleme Modalı (Admin İçin) -->
+    <div id="footer-edit-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md p-4">
+        <div class="glass-panel w-full max-w-sm">
+            <h2 class="text-xl font-bold mb-4 text-white text-center">Alt Bilgiyi Düzenle</h2>
+            <input type="text" id="footer-edit-input" class="custom-input" placeholder="Örn: HizliSystems v4.7">
+            <div class="flex gap-4 w-full mt-2">
+                <button onclick="closeFooterModal()" class="action-btn !bg-white/10 !text-white flex-1">İptal</button>
+                <button id="save-footer-btn" onclick="saveFooterText()" class="action-btn !bg-blue-500 !text-white flex-1 transition-colors duration-300">Kaydet</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Yeni Paylaşım Ekleme Modalı (Admin İçin) -->
+    <div id="new-post-modal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md p-4">
+        <div class="glass-panel w-full max-w-lg">
+            <h2 class="text-2xl font-bold mb-6 text-white text-center">Yeni Paylaşım Oluştur</h2>
+            <input type="text" id="post-title" class="custom-input" placeholder="Paylaşım Başlığı">
+            <textarea id="post-desc" class="custom-input min-h-[120px] resize-y" placeholder="Açıklama (İsteğe bağlı)"></textarea>
+            <input type="text" id="post-media" class="custom-input" placeholder="Dosya Adı (Örn: resim.jpg veya medya.mp4)" autocapitalize="none">
+            <p class="text-xs text-white/50 mb-4 text-center">Yüklenecek dosyanın tam adını ve uzantısını yazmanız yeterlidir.</p>
+            <div class="flex gap-4 w-full">
+                <button onclick="closeNewPostModal()" class="action-btn !bg-white/10 !text-white flex-1">İptal</button>
+                <button id="submit-post-btn" onclick="submitPost()" class="action-btn !bg-blue-500 !text-white flex-1 transition-colors duration-300">Paylaş</button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
